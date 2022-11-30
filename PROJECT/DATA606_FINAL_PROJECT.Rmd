@@ -1,0 +1,172 @@
+---
+title: DATA 606 Final Project
+author: "Josh Iden
+---
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(knitr)
+library(GGally)
+library(infer)
+```
+
+
+### Part 1 - Introduction
+This project focuses on the question "Is education level predictive of voter attitudes amongst non-voters?" using data collected for the FiveThirtyEight.com report ["Why Many Americans Don't Vote"](https://projects.fivethirtyeight.com/non-voters-poll-2020-election/)
+
+### Part 2 - Data
+The dataset contains survey data from 5,836 respondents, collected from polling done by Ipsos for FiveThirtyEight. The study is observational, relying on data taken from a random sample. Details about the data collection can be found [here](https://github.com/fivethirtyeight/data/blob/master/non-voters/README.md)
+
+### Part 3 - Exploratory data analysis
+First, let's take a look at the data.
+
+```{r}
+#loading packages
+library(tidyverse)
+
+# loading dataset
+url = "https://raw.githubusercontent.com/fivethirtyeight/data/master/non-voters/nonvoters_data.csv"
+df = read.csv(url)
+
+dim(df)
+```
+
+The dataset contains 5,836 observations across 119 columns (questions). For the purpose of this analysis, we will subset the data down to the desired data: Education, and Questions 5, 16, and 20.
+
+These questions are as follows:
+
+**Q5: Does it matter who wins elections? 1 = Yes, 2 = No**  
+**Q16: In general, how easy or difficult is it to vote in elections? 1 = Very Easy, 4 = Very Difficult**  
+**Q20: Are you currently registered to vote? 1 = Yes, 2 = No**  
+
+
+```{r}
+cols = c("educ","Q5","Q16","Q20")
+df.sub = df[cols]
+kable(head(df.sub))
+```
+
+Let's take a look at the summary statistics
+
+```{r}
+summary(df.sub)
+```
+```{r}
+sum(is.na(df.sub))
+```
+
+The first thing that pops out are the minimum values of -1, since the minimum response value is 1. Let's see how many of those there are.
+
+```{r}
+df.sub |> filter(Q5 == -1 | Q16 == -1 | Q20 == -1) |> count()
+```
+There are 82 rows with -1 entries.
+
+```{r}
+df.sub |> filter(Q5 == -1 | Q16 == -1 | Q20 == -1) |> head()
+```
+We can see that these negative values do not otherwise affect other responses. This is likely a data entry error. To rectify this, I will impute a value of 1 for every -1 value. 
+
+```{r}
+df.sub <- df.sub |>
+  mutate(Q5 = abs(Q5),
+            Q16 = abs(Q16),
+            Q20 = abs(Q20))
+
+summary(df.sub)
+```
+We can see this didn't significantly affect the summary statistics.
+
+Let's take a look at the distribution of education.
+
+```{r}
+ggplot(df.sub, aes(x=educ)) +
+  geom_bar() + 
+  geom_text(aes(label = after_stat(count)), 
+            stat="count", vjust=2,
+            color="white") +
+  labs(x = "education")
+```
+
+```{r}
+kable(prop.table(table(df.sub$educ)), col.names=c("Level","Freq"))
+```
+
+We can see from the survey responses, college graduates accounted for just under 40% of non-voters amongst respondents, while those hadn't completed college accounted for just over 60% of respondents.
+
+Taking a look at average answer by education level,
+
+```{r}
+df.sub |> 
+  group_by(educ) |>
+  summarize(Q5 = mean(Q5),
+            Q16 = mean(Q16),
+            Q20 = mean(Q20))
+```
+
+We can see that responders with an education level of "High School or less" has the highest response scores -- with higher scores representing more negative attitudes towards voting. Somewhat surprisingly, respondents with "some college" tend to view the difficulty involved with voting (Q16) more favorably than the other groups. 
+
+Let's take a look at the distribution of responses by education level.
+
+```{r}
+df.sub |>
+  pivot_longer(cols = c(2:4), names_to = "question", values_to = "rating") |>
+  ggplot(aes(x=question, y=rating)) +
+  facet_wrap(~ educ) +
+  geom_boxplot()
+```
+
+We can see that because the values are so closely disbersed, the distributions are challenging to visualize. 
+
+### Part 4 - Inference
+
+First, let's convert the educational column to a dichotomous variable - Yes or No. 
+
+```{r}
+college <- df.sub |>
+  mutate(college = ifelse(educ == "College", "yes", "no")) |>
+  select(5, 2:4)
+
+kable(head(college))
+```
+```{r}
+kable(prop.table(table(college$college)), col.names=c("Level","Freq"))
+```
+
+Now let's estimate the population proportion.
+
+```{r}
+college |>
+  specify(response = college, success = "yes") |>
+  generate(reps = 1000, type = "bootstrap") |>
+  calculate(stat = "prop") |>
+  get_ci(level = 0.95)
+```
+This tells us that 95% of the samples of the population of non-voters have mean college degree proportions between 38.6% and 41.1%
+
+Let's see how college education predicts the answers to the survey questions. To do this, we'll create dummy variables for college degree
+
+```{r}
+college <- college |>
+  mutate(college_dummy = ifelse(college == "yes", 1, 0))
+
+lm1 <- glm(college_dummy ~ Q5 + Q16 + Q20, data=college)
+summary(lm1)
+```
+We can tell right off the bat that Q16, perceived difficulty in voting, is not statistically significant, looking first at its p-value, so we remove it from the model and rerun. 
+
+```{r}
+lm2 <- glm(college_dummy ~ Q5 + Q20, data=college)
+summary(lm2)
+```
+
+
+### Part 5 - Conclusion
+
+
+### References
+
+
+### Appendix (optional)
+
+Remove this section if you don't have an appendix
