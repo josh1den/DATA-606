@@ -1,0 +1,322 @@
+---
+title: "DATA 606 Final Project"
+author: "Josh Iden"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+---
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(knitr)
+library(GGally)
+library(infer)
+library(car)
+library(caTools)
+library(caret)
+library(ROCR)
+library(wesanderson)
+```
+
+## Abstract
+
+This project looks at responses from a FiveThirtyEight.com sponsored survey conducted between Sept. 15-25 2020 amongst non-voters to questions regarding their attitudes about elections and whether there is a relationship between education level and voter attitudes based on those responses. Of the 33 questions posed in the survey, we have selected the 3 questions that focus specifically on attitudes towards voting. We then determine if a logistic regression model is appropriate to estimate the relationship between education level and the survey response attitudes towards voting and if a response score is able to predict a college degree and posit a null hypothesis that there is no relationship between the responses and having a college degree. 
+
+## Part 1 - Introduction
+
+![](https://raw.githubusercontent.com/josh1den/DATA-606/main/PROJECT/IMAGES/abstract.png)
+
+This project focuses on the question "Is education level related to voter attitudes amongst non-voters?" using data collected for the FiveThirtyEight.com report ["Why Many Americans Don't Vote"](https://projects.fivethirtyeight.com/non-voters-poll-2020-election/)
+
+## Part 2 - Data
+
+- 5,836 respondents 
+- Collected by Ipsos for FiveThirtyEight. 
+- The study is Observational, relying on data taken from a random sample.  
+- https://github.com/fivethirtyeight/data/blob/master/non-voters/README.md)
+
+Let's take a look at the data.
+
+```{r}
+# loading dataset
+url = "https://raw.githubusercontent.com/fivethirtyeight/data/master/non-voters/nonvoters_data.csv"
+df = read.csv(url)
+dim(df)
+```
+The dataset contains 5,836 observations across 119 columns (questions). For the purpose of this analysis, we will subset the data down to the desired data: Education, and Questions 5, 16, and 20.
+
+These questions are as follows:
+
+**Q5: Does it matter who wins elections? 1 = Yes, 2 = No**  
+
+**Q16: In general, how easy or difficult is it to vote in elections? 1 = Very Easy, 4 = Very Difficult**  
+
+**Q20: Are you currently registered to vote? 1 = Yes, 2 = No**  
+
+### Subsetting the Data
+
+```{r}
+cols = c("educ","Q5","Q16","Q20")
+df.sub = df[cols]
+kable(head(df.sub))
+```
+
+### Summary Statistics
+
+Let's take a look at the summary statistics:
+
+```{r}
+summary(df.sub)
+```
+
+```{r}
+sum(is.na(df.sub))
+```
+
+### Replacing Negative Values
+
+The first thing that pops out are the minimum values of -1, since the minimum response value is 1. Let's see how many of those there are.
+
+```{r}
+df.sub |> filter(Q5 == -1 | Q16 == -1 | Q20 == -1) |> count()
+```
+
+There are 82 rows with -1 entries.
+
+```{r}
+df.sub |> filter(Q5 == -1 | Q16 == -1 | Q20 == -1) |> head()
+```
+
+We can see that these negative values do not otherwise affect other responses. This is likely a data entry error. To rectify this, I will impute a value of 1 for every -1 value.
+
+```{r}
+df.sub <- df.sub |>
+  mutate(Q5 = as.numeric(abs(Q5)),
+            Q16 = as.numeric(abs(Q16)),
+            Q20 = as.numeric(abs(Q20)))
+
+summary(df.sub)
+```
+
+We can see this didn't significantly affect the summary statistics.
+
+## Part 3 - Exploratory data analysis
+
+### Distribution of Education
+
+Let's take a look at the distribution of education.
+
+```{r}
+ggplot(df.sub, aes(x=educ)) +
+  geom_bar() + 
+  geom_text(aes(label = after_stat(count)), 
+            stat="count", vjust=2,
+            color="white") +
+  labs(x = "education")
+```
+
+### Education Frequency Table
+
+```{r}
+kable(prop.table(table(df.sub$educ)), col.names=c("Level","Freq"))
+```
+
+We can see from the survey responses, college graduates accounted for just under 40% of non-voters amongst respondents, while those hadn't completed college accounted for just over 60% of respondents.
+
+### Average Answer by Education Level
+
+Taking a look at average answer by education level,
+
+```{r}
+df.sub |> 
+  group_by(educ) |>
+  summarize(Q5 = mean(Q5),
+            Q16 = mean(Q16),
+            Q20 = mean(Q20))
+```
+
+We can see that responders with an education level of "High School or less" has the highest response scores -- with higher scores representing more negative attitudes towards voting. Somewhat surprisingly, respondents with "some college" tend to view the difficulty involved with voting (Q16) more favorably than the other groups.
+
+### Transforming the Data
+
+As question 16 is rated on a scale of 1-4, 1 being "very easy", 2 being "easy", 3 = "difficult", 4 = "very difficult", we dichotomize the scores to 1 and 2 in order to visualize and model the relationship. We also dichotomize the education variable, with "yes" representing "has a college degree", and "no" representing "does not have a college degree".
+
+```{r}
+college <- df.sub |>
+  mutate(Q16 = as.numeric(ifelse(Q16 < 3, 1, 2)),
+         Q5 = factor(Q5),
+         Q16 = factor(Q16),
+         Q20 = factor(Q20),
+         college = factor(ifelse(educ == "College", "yes","no"))) |>
+  select(5, 2:4)
+kable(head(college))
+```
+
+Let's take a look at the average answer by education now, 
+
+```{r}
+college |> 
+  group_by(college) |>
+  summarize(Q5 = mean(as.numeric(Q5)),
+            Q16 = mean(as.numeric(Q16)),
+            Q20 = mean(as.numeric(Q20)))
+```
+We can see there's almost no difference in the answers for Question 16.
+
+Now, let's take a look at the distribution of responses by education level.
+
+### Distribution of Ratings by Dichotomized Education 
+
+Let's look at a scatter plot of the data,
+
+```{r}
+college |>
+  pivot_longer(cols = c(2:4), names_to = "question", values_to = "rating") |>
+  mutate(question = factor(question, levels=c("Q5","Q16","Q20"))) |>
+  ggplot(aes(x=college, y=rating, color=question)) +
+  geom_jitter() +
+  ylim("1","2") +
+  labs(title = "Distribution of Ratings")
+```
+
+We can see when we try to visualize this data as a scatterplot, the binomial versus categorical variables do not provide much insight into a correlation and there's certainly no linear relationship.
+
+So instead we model the data as a barplot. Here we can see that the proportions of responses for college graduates versus non college graduates for questions 5 & 20 is more apparent than for question 16, which looks like a relatively comparable proportion.
+
+```{r}
+college |>
+  pivot_longer(cols = c(2:4), names_to = "question", values_to = "rating") |>
+  ggplot(aes(x=rating, fill=college)) +
+  facet_grid(~factor(question, levels=c('Q5','Q16','Q20'))) +
+  geom_bar(position = "dodge") +
+  labs(title = "Distribution of Ratings") +
+  xlim("1","2") +
+  scale_fill_manual(values=c("red","blue"))
+```
+
+We can see by the binomial ratings that a linear regression model would not be appropriate for this data. A logistic model, however, will allow us to observe whether a relationship exists.
+
+## Part 4 - Inference
+
+### Examining the Variables
+
+The **dependent varibale** for this analysis is education level, yes = has college degree, no = no college degree. 
+
+The **independent variables** are the binomial question scores.
+
+Let's look at a frequency table for college degrees:
+
+```{r}
+kable(prop.table(table(college$college)), col.names=c("Level","Freq"))
+```
+
+Split is about 60/40.
+
+Now let's estimate the population proportion to see if this holds.
+
+```{r}
+college |>
+  specify(response = college, success = "yes") |>
+  generate(reps = 1000, type = "bootstrap") |>
+  calculate(stat = "prop") |>
+  get_ci(level = 0.95)
+```
+
+This tells us that 95% of the samples of the population of non-voters have mean college degree proportions between 38.7% and 41.1%
+
+Let's examine the relationship between college degree and response scores.
+
+### Multiple Logistic Regression Model
+
+First, let's see if there's a relationship between the variables.
+
+We build the logistic model using the glm() function and passing "binomial" into the family argument. 
+
+```{r}
+college_mod.full <- glm(college ~ ., data = college, family=binomial(link="logit"))
+summary(college_mod.full)
+```
+
+We can see that question 16 (perceived ease of voting) does not have significance in this model, so using backwards stepwise regression, we remove the variable from the model and re-run. 
+
+```{r}
+college_mod.v2 <- glm(college ~ Q5 + Q20, data = college, family=binomial(link="logit"))
+summary(college_mod.v2)
+```
+
+We see both questions maintain similar significance to the full model. 
+
+So we see there is significance, but can the model predict the probability of a college degree based on the response score?
+
+### Making Predictions
+
+First we split the data into training and test sets:
+
+```{r}
+set.seed(123)
+indices <- sample.split(Y = college$college, SplitRatio=0.8)
+college.train <- college[indices,]
+college.test<- college[!indices,]
+```
+
+Next, we make predictions using the testing set. First we build a model using the training set.
+
+```{r}
+training.mod <- glm(college ~ Q5 + Q20, data=college.train, family=binomial(link="logit"))
+```
+
+We make predictions for the testing set using the training model, passing "response" into the type argument, and estimate the probability the test model is able to predict a college degree. We know from our earlier frequency table that the proportion of college degrees is about 40%, hence the probability of observing a college degree is 40%, we set the threshold for predictions to 0.4.
+
+```{r}
+preds <- predict(training.mod, newdata = college.test, type = "response")
+predicted <- table(college_degree = college.test$college, predicted_value = preds>0.4 )
+my_mat = as.matrix(predicted)
+my_mat
+```
+Given accuracy = $TP + TN / TP + TN + FP + FN = $
+
+```{r}
+TN <- my_mat[1] # true negative (no/false)
+FP <- my_mat[2] # false positive (yes/false)
+FN <- my_mat[3] # false negative (no/true)
+TP <- my_mat[4] # true positive (yes/true)
+
+accuracy = (TP + TN)/(TP + TN + FP + FN)
+accuracy
+```
+We see the model only predicts with about 50% accuracy. 
+
+Using the ROC package, we can plot the trade off between sensitivity (True Positive) and specificity (True Negative):
+
+```{r}
+p = prediction(preds, college.test$college)
+prf <-performance(p, measure ="tpr", x.measure ="fpr")
+plot(prf)
+```
+The nearly straight line confirms the model offers nearly no predictive value. 
+
+Lastly, let's take a look at the Area Under the Curve (AUC)
+
+```{r}
+auc <- performance(p, measure = "auc")
+auc <- auc@y.values[[1]]
+
+auc
+```
+
+AUC measures separability. 0 = reciprocation, 1 = separability. 0.5 = no class separation capacity. 
+
+And we can see from the score here, this is precisely what we get. The model offers no separation capacity to distinguish between the categories.
+
+## Part 5 - Conclusion
+
+The conclusion here is that although there is a relationship between education and some voter responses to specific survey questions, it's clear that the model is not sufficient to observe or predict the strength of that relationship, so we fail to reject the null hypothesis. Some of the challenges involved in observing this relationship is the quality of the questions and the binomial and discrete response scores.
+
+## References
+https://godatadrive.com/blog/basic-guide-to-test-assumptions-of-linear-regression-in-r
+https://feliperego.github.io/blog/2015/10/23/Interpreting-Model-Output-In-R
+https://online.stat.psu.edu/stat462/node/116/
+https://medium.com/pew-research-center-decoded/a-short-intro-to-linear-regression-analysis-using-survey-data-ff39468f8afb
+https://www.displayr.com/what-is-a-roc-curve-how-to-interpret-it/
+https://towardsdatascience.com/understanding-auc-roc-curve-68b2303cc9c5
