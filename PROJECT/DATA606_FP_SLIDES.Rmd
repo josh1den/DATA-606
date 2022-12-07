@@ -1,0 +1,285 @@
+---
+title: "DATA 606 Final Project"
+author: "Josh Iden"
+output: 
+  revealjs::revealjs_presentation:
+    theme: moon
+    highlight: haddock
+    center: true
+---
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(knitr)
+library(GGally)
+library(infer)
+library(car)
+library(caTools)
+library(caret)
+library(ROCR)
+library(wesanderson)
+```
+
+## ABSTRACT
+
+---
+
+![](https://raw.githubusercontent.com/josh1den/DATA-606/main/PROJECT/IMAGES/abstract.png)
+
+## THE DATA
+
+- 5,836 Observations
+- Observational Study
+- Random Sampling of Non-Voters
+
+---
+
+### Questions
+
+- Does It Matter Who Wins Elections? (1=Yes, 2=No)
+- How Easy Is It To Vote? (1=Easy, 4=Difficult)
+- Are You Currently Registerd To Vote? (1=Yes, 2=No)
+
+---
+
+### Loading The Data
+
+```{r}
+# loading dataset
+url = "https://raw.githubusercontent.com/fivethirtyeight/data/master/non-voters/nonvoters_data.csv"
+df = read.csv(url)
+dim(df)
+```
+
+---
+
+### Subsetting The Data
+
+```{r}
+cols = c("educ","Q5","Q16","Q20")
+df.sub = df[cols]
+kable(head(df.sub))
+```
+
+---
+
+### Summary Statistics
+
+```{r}
+summary(df.sub)
+```
+
+---
+
+### Missing Values
+
+```{r}
+sum(is.na(df.sub))
+```
+
+---
+
+### Replacing Negative Values
+
+```{r}
+df.sub |> filter(Q5 == -1 | Q16 == -1 | Q20 == -1) |> count()
+```
+
+---
+
+### Replacing Negative Values
+
+```{r}
+df.sub <- df.sub |>
+  mutate(Q5 = as.numeric(abs(Q5)),
+            Q16 = as.numeric(abs(Q16)),
+            Q20 = as.numeric(abs(Q20)))
+
+summary(df.sub)
+```
+
+---
+
+## EXPLORATORY DATA ANALYSIS
+
+---
+
+### Distribution of Education
+
+![](https://raw.githubusercontent.com/josh1den/DATA-606/main/PROJECT/IMAGES/dist_education.png)
+
+---  
+
+### Distribution of Education
+
+```{r echo=FALSE}
+kable(prop.table(table(df.sub$educ)), col.names=c("Level","Freq"))
+```
+  
+---  
+
+### Transforming the Data  
+
+```{r}
+college <- df.sub |>
+  mutate(Q16 = as.numeric(ifelse(Q16 < 3, 1, 2)),
+         Q5 = factor(Q5),
+         Q16 = factor(Q16),
+         Q20 = factor(Q20),
+         college = factor(ifelse(educ == "College", "yes","no"))) |>
+  select(5, 2:4)
+kable(head(college))
+```
+
+
+---  
+
+### Distribution of Responses  
+![](https://raw.githubusercontent.com/josh1den/DATA-606/main/PROJECT/IMAGES/scatter.png)
+
+---   
+
+### Distribution of Responses
+
+![](https://raw.githubusercontent.com/josh1den/DATA-606/main/PROJECT/IMAGES/barplot.png)  
+
+---  
+
+## INFERENCE
+
+---  
+
+### Examining The Variables
+
+- *Dependent* = eduction
+- *Independent* = ratings  
+
+---  
+
+### Frequency Table
+
+```{r echo=FALSE}
+kable(prop.table(table(college$college)), col.names=c("Level","Freq"))
+```
+
+---   
+
+### Estimating the Population Proportion
+
+```{r}
+college |>
+  specify(response = college, success = "yes") |>
+  generate(reps = 1000, type = "bootstrap") |>
+  calculate(stat = "prop") |>
+  get_ci(level = 0.95)
+```
+
+
+---  
+
+### Multiple Logistic Regression Model
+
+```{r}
+college_mod.full <- glm(college ~ ., data = college, family=binomial(link="logit"))
+summary(college_mod.full)
+```
+  
+---  
+
+### Backwards Stepwise Regression
+
+```{r}
+college_mod.v2 <- glm(college ~ Q5 + Q20, data = college, family=binomial(link="logit"))
+summary(college_mod.v2)
+```
+
+---  
+
+### Making Predictions  
+
+---   
+
+### Splitting the Data  
+
+```{r}
+set.seed(123)
+indices <- sample.split(Y = college$college, SplitRatio=0.8)
+college.train <- college[indices,]
+college.test<- college[!indices,]
+```
+
+---  
+
+### Training the Model
+
+```{r}
+training.mod <- glm(college ~ Q5 + Q20, data=college.train, family=binomial(link="logit"))
+```
+
+---  
+
+### Making Predictions  
+
+```{r}
+preds <- predict(training.mod, newdata = college.test, type = "response")
+predicted <- table(college_degree = college.test$college, predicted_value = preds>0.4 )
+predicted
+```
+
+--- 
+
+### Measuring Accuracy
+
+- Accuracy = TP + TN / TP + TN + FP + FN
+
+```{r}
+my_mat <- as.matrix(predicted)
+TN <- my_mat[1] # true negative (no/false)
+FP <- my_mat[2] # false positive (yes/false)
+FN <- my_mat[3] # false negative (no/true)
+TP <- my_mat[4] # true positive (yes/true)
+
+accuracy = (TP + TN)/(TP + TN + FP + FN)
+accuracy
+```
+
+---  
+
+### Plotting the ROC
+
+- Receiver Operator Characteristic (ROC) 
+- Plots True Positive Rate against False Positive Rate
+- Curves closer to top corner indicate better performance
+
+---   
+
+```{r fig.show='hide'}
+p <- prediction(preds, college.test$college)
+prf <-performance(p, measure ="tpr", x.measure ="fpr")
+plot(prf)
+```
+
+![](https://raw.githubusercontent.com/josh1den/DATA-606/main/PROJECT/IMAGES/roc.png)  
+
+---
+
+### Measuring the Area Under the Curve (AUC)
+
+- Measures separability
+- Models capability to distinguish between classes (Yes/No)
+- 0 to 1 scale  
+
+---  
+
+### Measuring the Area Under the Curve (AUC)  
+
+```{r}
+auc <- performance(p, measure = "auc")
+auc <- auc@y.values[[1]]
+
+auc
+```
+
+## CONCLUSION
+
+## THANK YOU
